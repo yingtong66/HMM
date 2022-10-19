@@ -2,6 +2,7 @@ from flask import Flask, render_template,request, url_for, redirect, flash
 import numpy as np
 import os
 from datetime import timedelta
+import re
 
 
 # class NameForm(FlaskForm):
@@ -58,12 +59,12 @@ class HMM():
         self.C = np.zeros((self.tagNum, self.wordNum))#发射矩阵初始化，以词性和单词的ID为索引
 
         #训练模型
-        pre_tag = "END"#上一个单词的词性，以建立隐马尔科夫模型
+        pre_tag = "."#上一个单词的词性，以建立隐马尔科夫模型
         for line in open(file, 'r', encoding='utf-8'):
             line = line.split('/')
             if len(line) != 2:
                 continue
-            word, tag = line[0].lower(), line[1].rstrip()
+            word, tag = line[0].lower(), line[1].rstrip()#合并大小写
             tag = tag.split("|")[0]
 
             # #合并相似功能符号
@@ -74,7 +75,7 @@ class HMM():
 
             word_id, tag_id = self.word2id[word], self.tag2id[tag]#获取当前单词和词性
 
-            if pre_tag == "END":#句首
+            if pre_tag == ".":#句首
                 self.A[tag_id] += 1#统计初始矩阵
                 self.C[tag_id][word_id] += 1#统计发射矩阵
             else:#句中
@@ -83,56 +84,68 @@ class HMM():
             pre_tag = tag#更新上一个单词的词性
 
         # 转成概率
+        print(self.A)
         self.A = self.A / sum(self.A)   # 初始矩阵
         for i in range(self.tagNum):  # 转移矩阵、发射矩阵，按词性遍历
-            if self.id2tag[i]!="END":   # 除去句末终止符号
+            if self.id2tag[i]!=".":   # 除去句末终止符号
                 self.B[i] /= sum(self.B[i])
             self.C[i] /= sum(self.C[i])
 
     def viterbi(self, sentence):
+
         sentence=sentence.strip()
         print(sentence)
-        words=[]
-        for word in sentence.split(" "):
-            if word.lower() in self.word2id:
-                words.append(self.word2id[word.lower()])
-            else:
-                return False #包含生词 无法识别
-        #words = [self.word2id[word.lower()] for word in sentence.split(" ")]
-        length = len(words)
+        sentences = re.split(r"([;.!?])", sentence)
+        sentences = ["".join(i) for i in zip(sentences[0::2],sentences[1::2])]
+        print(sentences)
+        results=[]
+        for sentence in sentences:
+            sentence=sentence.strip()
+            words=[]
+            print(sentence)
+            for word in sentence.split(" "):
+                if word.lower() in self.word2id:#合并大小写
+                    words.append(self.word2id[word.lower()])
+                else:
+                    return False #包含生词 无法识别
+            #words = [self.word2id[word.lower()] for word in sentence.split(" ")]
+            length = len(words)
 
-        dp = np.zeros((length, self.tagNum))#存储分数，行数=句子长度，列数=词性
-        pre = np.zeros((length, self.tagNum), dtype=int)#存储上一层的选择
+            dp = np.zeros((length, self.tagNum))#存储分数，行数=句子长度，列数=词性
+            pre = np.zeros((length, self.tagNum), dtype=int)#存储上一层的选择
 
-        #第一个单词
-        for j in range(self.tagNum):#遍历词性
-            dp[0][j] = self.A[j]*self.C[j][words[0]]#发射矩阵x转移矩阵
-        #第二个单词起
-        #i是单词
-        for i in range(1, length):
-            # j为当前层的词性
-            for j in range(self.tagNum):
-                dp[i][j] = -1
-                # k为上一层的词性
-                for k in range(self.tagNum):
-                    #上一层该词性的得分*这一层对应转移矩阵的得分*这一层对应发射矩阵的得分
-                    score = dp[i-1][k]*self.B[k][j]*self.C[j][words[i]]
-                    #遍历完上一层后取得分最高的
-                    if score > dp[i][j]:
-                        dp[i][j] = score
-                        pre[i][j] = k #存储上一层的选择
+            #第一个单词
+            for j in range(self.tagNum):#遍历词性
+                dp[0][j] = self.A[j]*self.C[j][words[0]]#发射矩阵x转移矩阵
+                #print(dp[0][j])
+            #第二个单词起
+            #i是单词
+            for i in range(1, length):
+                # j为当前层的词性
+                for j in range(self.tagNum):
+                    dp[i][j] = -1
+                    # k为上一层的词性
+                    for k in range(self.tagNum):
+                        #上一层该词性的得分*这一层对应转移矩阵的得分*这一层对应发射矩阵的得分
+                        score = dp[i-1][k]*self.B[k][j]*self.C[j][words[i]]
+                        #遍历完上一层后取得分最高的
+                        if score > dp[i][j]:
+                            dp[i][j] = score
+                            pre[i][j] = k #存储上一层的选择
+                #print(dp[i].max())
 
-        result_id = [0] * length#存储最终结果的tagID
-        result_id[length-1] = int(np.argmax(dp[length-1]))#返回最终得分最高的最后一个单词的词性
+            result_id = [0] * length#存储最终结果的tagID
+            result_id[length-1] = int(np.argmax(dp[length-1]))#返回最终得分最高的最后一个单词的词性
 
-        # 向前遍历
-        for i in range(length-2,-1,-1):#i为当前单词，从倒数第二个单词开始遍历
-            result_id[i] = pre[i+1][result_id[i+1]]
+            # 向前遍历
+            for i in range(length-2,-1,-1):#i为当前单词，从倒数第二个单词开始遍历
+                result_id[i] = pre[i+1][result_id[i+1]]
 
-        result = []
-        for i in range(len(result_id)):#将tagID转化为tagName
-            result.append(self.id2tag[result_id[i]])
-        return result
+            result = []
+            for i in range(len(result_id)):#将tagID转化为tagName
+                result.append(self.id2tag[result_id[i]])
+            results.extend(result)
+        return results
 
 @app.route('/', methods=['GET', 'POST'])
 def result():
